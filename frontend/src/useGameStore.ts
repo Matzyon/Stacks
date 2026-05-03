@@ -4,6 +4,7 @@ import { socket } from "./socket";
 const EVENTS = {
   PLAY_CARD:  "play_card",
   END_TURN:   "end_turn",
+  UNDO_CARD:  "undo_card",
   GAME_STATE: "game_state",
   GAME_OVER:  "game_over",
   GAME_START: "game_start",
@@ -52,6 +53,9 @@ type GameStore = {
   errorMessage: string | null;
   gameOverResult: { winnerId: string; reason: string } | null;
 
+  // Undo — nombre de coups posés ce tour (pour afficher/cacher le bouton)
+  turnMovesCount: number;
+
   setPhase: (phase: "lobby" | "waiting" | "game" | "over") => void;
   clearError: () => void;
 };
@@ -71,6 +75,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   roomCode: "",
   mode: "duel",
   error: null,
+  turnMovesCount: 0,
 
   setPseudo:   (pseudo)   => set({ pseudo }),
   setRoomCode: (roomCode) => set({ roomCode }),
@@ -112,13 +117,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
 }));
 
 // ------------------------------------------------------------
-// Listeners — .off().on() garantit un seul listener même après HMR
+// Listeners
 // ------------------------------------------------------------
 
 socket
   .off(EVENTS.GAME_START)
   .on(EVENTS.GAME_START, () => {
-    useGameStore.setState({ phase: "game" });
+    useGameStore.setState({ phase: "game", turnMovesCount: 0 });
   });
 
 socket
@@ -141,8 +146,9 @@ socket
   });
 
 // ------------------------------------------------------------
-// Reconnexion — .off().on() évite l'empilement de listeners HMR
+// Reconnexion
 // ------------------------------------------------------------
+
 socket
   .off("connect")
   .on("connect", () => {
@@ -156,11 +162,11 @@ socket
 socket
   .off("disconnect")
   .on("disconnect", (reason) => {
-    console.log("❌ disconnect reason:", reason)
+    console.log("❌ disconnect reason:", reason);
   });
 
 socket
   .off("connect_error")
   .on("connect_error", (err) => {
-    console.log("❌ connect_error:", err.message)
+    console.log("❌ connect_error:", err.message);
   });

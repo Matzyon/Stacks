@@ -12,7 +12,17 @@ import { shuffle, drawCards } from "./utils/deck.utils"
 import { buildPersonalizedState } from "./utils/state.builder"
 
 const HAND_SIZE = DUEL_CONFIG.handSize // 6
-const DRAW_SOLO = 2
+
+// ------------------------------------------------------------
+// TurnMove — snapshot d'un coup pour permettre le undo
+// ------------------------------------------------------------
+
+interface TurnMove {
+  card: number
+  pileId: string
+  previousTop: number
+  wasOpponentPile: boolean
+}
 
 // ------------------------------------------------------------
 // Helpers
@@ -40,6 +50,7 @@ export class DuelRoom implements IRoom {
   private io: Server
   private privateDecks: Record<string, number[]> = {}
   private socketIds: Record<string, string> = {}
+  private turnMoves: Record<string, TurnMove[]> = {}
 
   constructor(io: Server, initialState: GameState) {
     this.io = io
@@ -47,6 +58,7 @@ export class DuelRoom implements IRoom {
 
     for (const player of this.state.players) {
       this.privateDecks[player.id] = buildInitialDeck(player.hand)
+      this.turnMoves[player.id] = []
     }
   }
 
@@ -55,7 +67,7 @@ export class DuelRoom implements IRoom {
   }
 
   // ----------------------------------------------------------
-  // join — joueur 1 (reconnexion) ou joueur 2 (nouveau)
+  // join
   // ----------------------------------------------------------
 
   join(socket: Socket, playerId: string, pseudo: string): void {
@@ -77,7 +89,7 @@ export class DuelRoom implements IRoom {
   }
 
   // ----------------------------------------------------------
-  // playCard — poser une carte sur une pile
+  // playCard
   // ----------------------------------------------------------
 
   playCard(socket: Socket, playerId: string, card: number, pileId: string): void {
@@ -90,16 +102,57 @@ export class DuelRoom implements IRoom {
     const player = this.state.players.find(p => p.id === playerId)!
     const pile   = this.state.piles.find(p => p.id === pileId)!
 
+    const move: TurnMove = {
+      card,
+      pileId,
+      previousTop: pile.top,
+      wasOpponentPile: result.delta.isOpponentPile,
+    }
+
     player.hand = player.hand.filter(c => c !== card)
     pile.top = result.delta.newTop
     this.state.cardsPlayedThisTurn += 1
     if (result.delta.isOpponentPile) this.state.playedOnOpponentThisTurn = true
 
+    this.turnMoves[playerId] = [...(this.turnMoves[playerId] ?? []), move]
+
     this.emitToAll()
   }
 
   // ----------------------------------------------------------
-  // endTurn — pioche + passage au joueur suivant
+  // undoCard — annule le dernier coup du tour en cours
+  // Commun à tous les modes via IRoom
+  // ----------------------------------------------------------
+
+  undoCard(socket: Socket, playerId: string): void {
+    if (this.state.currentPlayerId !== playerId) {
+      socket.emit(EVENTS.ERROR, { message: "Ce n'est pas votre tour." })
+      return
+    }
+
+    const moves = this.turnMoves[playerId] ?? []
+    if (moves.length === 0) {
+      socket.emit(EVENTS.ERROR, { message: "Aucun coup à annuler." })
+      return
+    }
+
+    const lastMove = moves[moves.length - 1]!
+    const pile     = this.state.piles.find(p => p.id === lastMove.pileId)!
+    const player   = this.state.players.find(p => p.id === playerId)!
+
+    pile.top     = lastMove.previousTop
+    player.hand  = [...player.hand, lastMove.card]
+    this.state.cardsPlayedThisTurn = Math.max(0, this.state.cardsPlayedThisTurn - 1)
+    this.turnMoves[playerId] = moves.slice(0, -1)
+
+    // Recalcule depuis l'historique restant — gère le missclick adverse
+    this.state.playedOnOpponentThisTurn = this.turnMoves[playerId]!.some(m => m.wasOpponentPile)
+
+    this.emitToAll()
+  }
+
+  // ----------------------------------------------------------
+  // endTurn
   // ----------------------------------------------------------
 
   endTurn(socket: Socket, playerId: string): void {
@@ -140,6 +193,7 @@ export class DuelRoom implements IRoom {
     this.state.piles.push(...createPlayerPiles(playerIndex))
     this.privateDecks[playerId] = deck
     this.socketIds[playerId] = socketId
+    this.turnMoves[playerId] = []
   }
 
   private applyDraw(playerId: string, count: number): void {
@@ -156,6 +210,9 @@ export class DuelRoom implements IRoom {
     this.state.turnNumber += 1
     this.state.cardsPlayedThisTurn = 0
     this.state.playedOnOpponentThisTurn = false
+    for (const id of Object.keys(this.turnMoves)) {
+      this.turnMoves[id] = []
+    }
   }
 
   private emitToAll(): void {

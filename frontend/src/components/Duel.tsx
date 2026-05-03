@@ -5,13 +5,11 @@ import { socket } from "../socket";
 const EVENTS = {
   PLAY_CARD: "play_card",
   END_TURN:  "end_turn",
+  UNDO_CARD: "undo_card",
 } as const;
 
 // ------------------------------------------------------------
 // canPlayOnPile
-// isOwn = true  → règle standard (strictement sup/inf) + recul exact (-10/+10)
-// isOwn = false → règle adverse : carte INFÉRIEURE sur asc, SUPÉRIEURE sur desc
-// ⚠️ Ne pas utiliser isRewind ici pour les piles adverses
 // ------------------------------------------------------------
 function canPlayOnPile(
   card: number,
@@ -27,6 +25,9 @@ function canPlayOnPile(
   }
 }
 
+// ------------------------------------------------------------
+// PileCard
+// ------------------------------------------------------------
 function PileCard({
   pile, isOwn, isPlayable, isOpponentBlocked, selectedCard, onPlay,
 }: {
@@ -73,6 +74,9 @@ function PileCard({
   );
 }
 
+// ------------------------------------------------------------
+// HandCard
+// ------------------------------------------------------------
 function HandCard({
   value, isSelected, onSelect, isMyTurn,
 }: {
@@ -98,6 +102,9 @@ function HandCard({
   );
 }
 
+// ------------------------------------------------------------
+// DeckButton
+// ------------------------------------------------------------
 function DeckButton({
   deckSize, canEndTurn, isMyTurn, onEndTurn,
 }: {
@@ -133,14 +140,18 @@ function DeckButton({
   );
 }
 
+// ------------------------------------------------------------
+// Duel
+// ------------------------------------------------------------
 export default function Duel() {
   const gameState    = useGameStore((s) => s.gameState);
   const errorMessage = useGameStore((s) => s.errorMessage);
   const clearError   = useGameStore((s) => s.clearError);
   const playerId     = useGameStore((s) => s.playerId);
 
-  const [selectedCard,     setSelectedCard]    = useState<number | null>(null);
+  const [selectedCard,     setSelectedCard]     = useState<number | null>(null);
   const [playedOnOpponent, setPlayedOnOpponent] = useState(false);
+  const [turnMovesCount,   setTurnMovesCount]   = useState(0);
 
   if (!gameState) {
     return (
@@ -165,6 +176,7 @@ export default function Duel() {
   const myPiles       = piles.filter((p) => p.id.startsWith(myPrefix));
   const opponentPiles = piles.filter((p) => !p.id.startsWith(myPrefix));
   const canEndTurn    = cardsPlayedThisTurn >= 2;
+  const canUndo       = isMyTurn && turnMovesCount > 0;
 
   function handleSelectCard(card: number) {
     if (!isMyTurn) return;
@@ -178,7 +190,17 @@ export default function Duel() {
 
     socket.emit(EVENTS.PLAY_CARD, { roomId, playerId, card: selectedCard, pileId });
     if (isOpponent) setPlayedOnOpponent(true);
+    setTurnMovesCount((n) => n + 1);
     setSelectedCard(null);
+  }
+
+  function handleUndo() {
+    if (!canUndo) return;
+    socket.emit(EVENTS.UNDO_CARD, { roomId, playerId });
+    setTurnMovesCount((n) => Math.max(0, n - 1));
+    // Si le dernier coup était sur la pile adverse, recalculé côté serveur
+    // On remet playedOnOpponent à false optimistiquement — le GAME_STATE corrigera si besoin
+    if (turnMovesCount === 1) setPlayedOnOpponent(false);
   }
 
   function handleEndTurn() {
@@ -186,6 +208,7 @@ export default function Duel() {
     socket.emit(EVENTS.END_TURN, { roomId, playerId });
     setSelectedCard(null);
     setPlayedOnOpponent(false);
+    setTurnMovesCount(0);
   }
 
   return (
@@ -213,7 +236,17 @@ export default function Duel() {
             : <span className="text-slate-400">⌛ {opponent?.pseudo}</span>
           }
         </div>
-        <div className="text-sm text-slate-400">{cardsPlayedThisTurn}/2 posées</div>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-slate-400">{cardsPlayedThisTurn}/2 posées</span>
+          {canUndo && (
+            <button
+              onClick={handleUndo}
+              className="text-xs px-3 py-1 rounded-lg border border-slate-500 text-slate-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+            >
+              ↩ Annuler
+            </button>
+          )}
+        </div>
       </header>
 
       {/* Zone adverse */}

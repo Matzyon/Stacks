@@ -1,5 +1,6 @@
 // ============================================================
 // index.ts — Serveur Express + Socket.io
+// Stacks — v1.0
 // Ne connaît que IRoom — jamais DuelRoom ou CoopRoom directement
 // Pour ajouter un mode : 1 ligne dans createRoom()
 // ============================================================
@@ -16,13 +17,13 @@ import type { GameMode } from "./game/types"
 
 const app  = express()
 const http = createServer(app)
-
-const io = new Server(http, {
+const io   = new Server(http, {
   cors: { origin: process.env.FRONTEND_URL ?? "http://localhost:5173" },
   pingTimeout:  60000,
   pingInterval: 25000,
-  transports: ['websocket'], // ← force websocket, interdit le polling
+  transports: ["websocket"],
 })
+
 app.use(cors())
 app.use(express.json())
 
@@ -38,48 +39,37 @@ function createRoom(io: Server, mode: GameMode, initialState: any): IRoom {
 
 app.post("/game/create", (req, res) => {
   const { mode, pseudo } = req.body as { mode: GameMode; pseudo: string }
-
   if (!mode || !pseudo?.trim()) {
     res.status(400).json({ error: "mode et pseudo requis" })
     return
   }
-
-  const roomId   = Math.random().toString(36).slice(2, 8).toUpperCase()
-  const playerId = crypto.randomUUID()
-
+  const roomId       = Math.random().toString(36).slice(2, 8).toUpperCase()
+  const playerId     = crypto.randomUUID()
   const initialState = createInitialState(roomId, mode, playerId, pseudo)
-  const room = createRoom(io, mode, initialState)
-
+  const room         = createRoom(io, mode, initialState)
   rooms.set(roomId, room)
   console.log(`[room] créée ${roomId} (${mode}) par ${pseudo}`)
-
   res.json({ roomId, playerId })
 })
+
 io.engine.on("connection_error", (err) => {
   console.log("[engine error]", err.code, err.message, err.context)
 })
+
 io.on("connection", (socket) => {
   console.log(`[socket] connecté ${socket.id}`)
 
   socket.on("join_room", ({ roomId, playerId, pseudo }: {
-    roomId: string
-    playerId: string
-    pseudo: string
+    roomId: string; playerId: string; pseudo: string
   }) => {
-    const room = rooms.get(roomId)
     console.log(`[join_room] roomId=${roomId} playerId=${playerId} pseudo=${pseudo}`)
-    if (!room) {
-      socket.emit("error", { message: "room_not_found" })
-      return
-    }
+    const room = rooms.get(roomId)
+    if (!room) { socket.emit("error", { message: "room_not_found" }); return }
     room.join(socket, playerId, pseudo)
   })
 
   socket.on("play_card", ({ roomId, playerId, card, pileId }: {
-    roomId: string
-    playerId: string
-    card: number
-    pileId: string
+    roomId: string; playerId: string; card: number; pileId: string
   }) => {
     console.log(`[play_card] room=${roomId} player=${playerId} card=${card} pile=${pileId}`)
     const room = rooms.get(roomId)
@@ -87,9 +77,17 @@ io.on("connection", (socket) => {
     room.playCard(socket, playerId, card, pileId)
   })
 
+  socket.on("undo_card", ({ roomId, playerId }: {
+    roomId: string; playerId: string
+  }) => {
+    console.log(`[undo_card] room=${roomId} player=${playerId}`)
+    const room = rooms.get(roomId)
+    if (!room) return
+    room.undoCard(socket, playerId)
+  })
+
   socket.on("end_turn", ({ roomId, playerId }: {
-    roomId: string
-    playerId: string
+    roomId: string; playerId: string
   }) => {
     console.log(`[end_turn] room=${roomId} player=${playerId}`)
     const room = rooms.get(roomId)
@@ -100,7 +98,6 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log(`[socket] déconnecté ${socket.id}`)
   })
-  
 })
 
 const PORT = process.env.PORT ?? 3001
